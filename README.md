@@ -16,7 +16,7 @@
 ➡️ اگر روی RouterOS v6 هستید، باید یک اسکریپت جدا بنویسید که به‌جای `/routing table find`، لیست `routing-mark` های تعریف‌شده در `/ip firewall mangle` را پیمایش کند و برای هر کدام یک روت با `type=blackhole routing-mark=<mark-name>` بسازد. این مخزن/اسکریپت برای آن حالت پوشش نمی‌دهد.
 
 ## پیش‌نیازها
-- RouterOS **v7.16.2 یا بالاتر** (تست‌شده روی v7.21.5)
+- RouterOS **v7.16.2 یا بالاتر** (تست‌شده روی v7.21.5 و v7.24.6)
 - دسترسی ادمین به ترمینال یا WinBox/WebFig
 
 ## نصب
@@ -35,11 +35,12 @@
 ### روش ۲: از طریق ترمینال
 ```
 /system script add name=dns-leak-killswitch policy=read,write source="
-:global blackholeDistance 10;
-:global excludeTables {\"main\"};
-:global prefixFilter \"\";
+:local blackholeDistance 10;
+:local excludeTables {\"main\"};
+:local prefixFilter \"\";
+:local tag \"killswitch\";
 
-:foreach tId in=[/routing table find] do={
+:foreach tId in=[/routing table find where !dynamic] do={
     :local tName [/routing table get \$tId name];
     :local skip false;
     :foreach ex in=\$excludeTables do={
@@ -48,10 +49,10 @@
     :if (\$prefixFilter != \"\" && [:find \$tName \$prefixFilter] != 0) do={ :set skip true; };
     :if (\$skip = false) do={
         :if ([:len [/ip route find where routing-table=\$tName blackhole=yes dst-address=\"0.0.0.0/0\"]] = 0) do={
-            /ip route add dst-address=\"0.0.0.0/0\" blackhole distance=\$blackholeDistance routing-table=\$tName;
+            /ip route add dst-address=\"0.0.0.0/0\" blackhole distance=\$blackholeDistance routing-table=\$tName comment=\$tag;
         };
         :if ([:len [/ipv6 route find where routing-table=\$tName blackhole=yes dst-address=\"::/0\"]] = 0) do={
-            /ipv6 route add dst-address=\"::/0\" blackhole distance=\$blackholeDistance routing-table=\$tName;
+            /ipv6 route add dst-address=\"::/0\" blackhole distance=\$blackholeDistance routing-table=\$tName comment=\$tag;
         };
     };
 };
@@ -64,18 +65,19 @@
 در ابتدای اسکریپت:
 - `blackholeDistance` (پیش‌فرض `10`): Distance روت Blackhole. باید از Distance روت واقعی تونل بیشتر باشد تا فقط زمانی فعال شود که مسیر اصلی از دسترس خارج شود.
 - `excludeTables` (پیش‌فرض `{"main"}`): لیست Routing Table هایی که باید نادیده گرفته شوند.
+- `tag` (پیش‌فرض `"killswitch"`): comment روت‌هایی که اسکریپت می‌سازد. حذف و بررسی با همین comment انجام می‌شود.
 - `prefixFilter` (پیش‌فرض `""`): اگر مقداردهی شود (مثلاً `"to-"`)، فقط روی جدول‌هایی که اسمشان با این پیشوند شروع می‌شود اجرا می‌شود.
 
 ## نحوه‌ی کار
 1. هر ۱۵ دقیقه (توسط Scheduler) اسکریپت اجرا می‌شود.
-2. تمام Routing Table های موجود را با `[/routing table find]` می‌خواند (شامل هر جدولی که بعداً برای یک تونل جدید ساخته شود — بدون نیاز به تغییر دستی اسکریپت).
-3. برای هر جدول (به‌جز موارد Exclude شده)، اگر روت Blackhole برای `0.0.0.0/0` (IPv4) یا `::/0` (IPv6) وجود نداشته باشد، آن را می‌سازد.
+2. تمام Routing Table های موجود را با `[/routing table find where !dynamic]` می‌خواند (جدول‌های dynamic مثل `main` و جدول‌های VRF نادیده گرفته می‌شوند؛ شامل هر جدولی که بعداً برای یک تونل جدید ساخته شود — بدون نیاز به تغییر دستی اسکریپت).
+3. برای هر جدول (به‌جز موارد Exclude شده)، اگر روت Blackhole برای `0.0.0.0/0` (IPv4) یا `::/0` (IPv6) وجود نداشته باشد، آن را با comment `killswitch` می‌سازد.
 4. چون Distance این روت (۱۰) بالاتر از Distance روت واقعی تونل است، فقط زمانی Active می‌شود که مسیر اصلی از کار بیفتد — یعنی دقیقاً یک Kill-Switch در برابر نشت DNS/IP.
 
 ## بررسی و تست
 ```
-/ip route print where blackhole=yes
-/ipv6 route print where blackhole=yes
+/ip route print where comment="killswitch"
+/ipv6 route print where comment="killswitch"
 /system script run dns-leak-killswitch
 /system scheduler print
 ```
@@ -85,9 +87,11 @@
 ```
 /system scheduler remove dns-leak-killswitch-scheduler
 /system script remove dns-leak-killswitch
-/ip route remove [find blackhole=yes]
-/ipv6 route remove [find blackhole=yes]
+/ip route remove [find comment="killswitch"]
+/ipv6 route remove [find comment="killswitch"]
 ```
+
+فقط روت‌هایی که خود اسکریپت ساخته (با comment `killswitch`) حذف می‌شوند و روت‌های Blackhole دستی شما دست‌نخورده می‌مانند.
 
 ## لایسنس
 MIT — استفاده، تغییر و توزیع آزاد است.
